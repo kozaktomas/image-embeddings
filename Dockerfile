@@ -15,7 +15,7 @@ WORKDIR /app
 RUN pip install --upgrade pip
 
 # PyTorch CPU-only (much smaller)
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
 # ONNX Runtime CPU
 RUN pip install --no-cache-dir onnxruntime

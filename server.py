@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import open_clip
 from PIL import Image
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Body
 from insightface.app import FaceAnalysis
 import warnings
 
@@ -85,6 +85,20 @@ async def embed_image(file: UploadFile = File(...)):
     with torch.inference_mode():
         feat = model.encode_image(x)
         feat = feat / feat.norm(dim=-1, keepdim=True)  # normalizace je praktická pro cosine similarity
+        vec: List[float] = feat[0].detach().float().cpu().tolist()
+
+    return {"dim": len(vec), "embedding": vec, "model": MODEL_NAME, "pretrained": PRETRAINED}
+
+@app.post("/embed/text", response_model=dict)
+async def embed_text(text: str = Body(..., embed=True)):
+    if not text or not text.strip():
+        raise HTTPException(status_code=400, detail="Text must not be empty.")
+
+    tokens = tokenizer([text]).to(DEVICE)
+
+    with torch.inference_mode():
+        feat = model.encode_text(tokens)
+        feat = feat / feat.norm(dim=-1, keepdim=True)
         vec: List[float] = feat[0].detach().float().cpu().tolist()
 
     return {"dim": len(vec), "embedding": vec, "model": MODEL_NAME, "pretrained": PRETRAINED}

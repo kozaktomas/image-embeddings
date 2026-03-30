@@ -1,0 +1,16 @@
+[Unit]
+Description=Image Embeddings API (OpenCLIP + InsightFace)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=box
+WorkingDirectory=/opt/image-embeddings
+ExecStart=/opt/image-embeddings/venv/bin/uvicorn server:app --host 0.0.0.0 --port 8000
+Restart=on-failure
+RestartSec=10
+Environment=HOME=/home/box
+
+[Install]
+WantedBy=multi-user.target

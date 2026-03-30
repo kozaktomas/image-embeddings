@@ -61,9 +61,28 @@ curl -X POST http://localhost:8000/embed/image -F "file=@photo.jpg"
 curl -X POST http://localhost:8000/embed/text -H "Content-Type: application/json" -d '{"text": "a photo of a cat"}'
 ```
 
-## Systemd Deployment
+## Native Deployment (GPU)
 
 ```bash
+# Clone and set up venv
+sudo mkdir -p /opt/image-embeddings
+git clone <repo-url> /opt/image-embeddings
+cd /opt/image-embeddings
+python3 -m venv venv
+source venv/bin/activate
+
+# Install PyTorch with CUDA
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+
+# Install remaining dependencies
+pip install open_clip_torch fastapi uvicorn python-multipart \
+    "numpy<2" "opencv-python-headless<4.10" insightface onnxruntime
+
+# Pre-download models
+python -c "import open_clip; open_clip.create_model_and_transforms('ViT-L-14', pretrained='laion2b_s32b_b82k')"
+python -c "from insightface.app import FaceAnalysis; FaceAnalysis(name='buffalo_l', providers=['CPUExecutionProvider'])"
+
+# Install and start systemd service
 sudo cp deploy/image-embeddings.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now image-embeddings

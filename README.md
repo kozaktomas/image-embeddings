@@ -61,6 +61,20 @@ curl -X POST http://localhost:8000/embed/image -F "file=@photo.jpg"
 curl -X POST http://localhost:8000/embed/text -H "Content-Type: application/json" -d '{"text": "a photo of a cat"}'
 ```
 
+## Systemd Deployment
+
+```bash
+sudo cp deploy/image-embeddings.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now image-embeddings
+```
+
+Check status:
+```bash
+sudo systemctl status image-embeddings
+curl http://localhost:8000/health
+```
+
 ## License
 
 MIT

@@ -1,0 +1,24 @@
+[Unit]
+Description=Image Embeddings API (OpenCLIP + InsightFace)
+After=network-online.target docker.service
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Restart=on-failure
+RestartSec=10
+
+ExecStartPre=-/usr/bin/docker rm -f image-embeddings
+ExecStartPre=/usr/bin/docker pull ghcr.io/kozaktomas/image-embeddings:main
+
+ExecStart=/usr/bin/docker run \
+    --name image-embeddings \
+    --rm \
+    -p 8000:8000 \
+    ghcr.io/kozaktomas/image-embeddings:main
+
+ExecStop=/usr/bin/docker stop image-embeddings
+
+[Install]
+WantedBy=multi-user.target

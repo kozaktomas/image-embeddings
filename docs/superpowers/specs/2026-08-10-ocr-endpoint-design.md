@@ -18,6 +18,8 @@ celý archiv fotek a uložit texty pro fulltextové vyhledávání.
 - Čeština včetně diakritiky, vedle toho zbytek latinky.
 - Rozšíření `/health` o informaci, na čem OCR jede.
 - Testy a měření propustnosti na boxu.
+- **Aktualizace `Dockerfile`.** Repo publikuje CPU image do GHCR; kdyby se nechal beze změny,
+  kontejnerová varianta by nový endpoint neměla. V kontejneru poběží OCR na CPU.
 
 **Mimo:**
 
@@ -127,15 +129,21 @@ RapidOCR(params={
     "Det.model_path": f"{MODELS_DIR}/PP-OCRv5_mobile_det.onnx",
     "Rec.model_path": f"{MODELS_DIR}/latin_PP-OCRv5_mobile_rec.onnx",
     "Rec.rec_keys_path": f"{MODELS_DIR}/latin_dict.txt",
-    "Global.text_score": HARD_FLOOR,   # 0.1, viz níž
+    "Global.text_score": 0.05,   # výchozí, každé volání ji přebije, viz níž
     "EngineConfig.onnxruntime.use_cuda": USE_CUDA,
 })
 ```
 
-**Kde se filtruje:** RapidOCR se inicializuje s pevným nízkým prahem `Global.text_score = 0.1`
-a `min_confidence` z requestu se aplikuje až v našem kódu. Kdyby se práh z requestu předával
-do RapidOCR, znamenalo by to přeinicializaci enginu na každý request a zároveň by nešlo
-dostat bloky pod výchozí hodnotou. Práh 0.1 je jen odstranění zjevného šumu.
+**Kde se filtruje:** `RapidOCR.__call__` přijímá `text_score` na každé volání, takže se
+`min_confidence` z requestu předá přímo enginu — žádná přeinicializace. Náš kód práh navíc
+aplikuje ještě jednou nad výsledkem, aby kontrakt (`min_confidence` platí na `text`
+i na `blocks`) držel nezávisle na tom, jak si prahování vykládá RapidOCR uvnitř.
+Inicializační `Global.text_score = 0.05` je jen výchozí hodnota, kterou každé volání přebije.
+
+**Souběh:** `__call__` interně přepisuje stav instance (`update_params`), takže volání téhož
+enginu ze dvou vláken by se navzájem přebíjela. Endpoint proto bude `async def` jako všechny
+stávající, čímž se volání serializují na event loopu. Je to zároveň shodné s tím, jak se
+v téhle službě chovají CLIP i InsightFace.
 
 Konfigurace přes proměnné prostředí:
 

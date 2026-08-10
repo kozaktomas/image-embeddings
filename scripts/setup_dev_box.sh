@@ -28,8 +28,14 @@ python3 -m venv venv
 # onnxruntime), takze odinstalace jednoho sourozence smaze i soubory, ktere
 # vlastni jeho nahrada. Bez toho skonci "ModuleNotFoundError: No module named
 # 'cv2'" resp. "module 'onnxruntime' has no attribute '__version__'".
+#
+# Verze onnxruntime-gpu je pripnuta zamerne: 1.28 je postavene na CUDA 13, ale
+# tenhle stroj (i torch cu128) ma CUDA 12.8. S 1.28 se CUDAExecutionProvider
+# tvari jako dostupny, ale nenacte se (chybi libcublasLt.so.13) a inference tise
+# spadne na CPU. 1.22 je CUDA 12 build a bezi na knihovnach, ktere pritahl torch.
 ./venv/bin/pip uninstall -y onnxruntime opencv-python
-./venv/bin/pip install --force-reinstall --no-deps onnxruntime-gpu "opencv-python-headless<4.10"
+./venv/bin/pip install --force-reinstall --no-deps "onnxruntime-gpu==1.22.0" "opencv-python-headless<4.10"
+./venv/bin/pip install coloredlogs
 
 ./scripts/fetch_models.sh
 
@@ -41,6 +47,9 @@ import cv2
 import numpy
 import onnxruntime
 
+if hasattr(onnxruntime, "preload_dlls"):
+    onnxruntime.preload_dlls()
+
 providers = onnxruntime.get_available_providers()
 print("onnxruntime:", onnxruntime.__version__, providers)
 print("cv2:", cv2.__version__)
@@ -51,6 +60,17 @@ if "CUDAExecutionProvider" not in providers:
     problems.append(f"chybi CUDAExecutionProvider (mam jen {providers})")
 if not numpy.__version__.startswith("1."):
     problems.append(f"numpy musi byt 1.x kvuli insightface, mam {numpy.__version__}")
+
+# "Available" nestaci: pri nesouladu verzi CUDA se provider nenacte a inference
+# tise spadne na CPU. Jedina spolehliva kontrola je opravdu vytvorit session.
+session = onnxruntime.InferenceSession(
+    "models/PP-OCRv5_mobile_det.onnx",
+    providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+)
+active = session.get_providers()
+print("session providers:", active)
+if "CUDAExecutionProvider" not in active:
+    problems.append(f"session bezi na {active}, CUDA se nenacetla")
 
 from insightface.app import FaceAnalysis  # noqa: F401
 from rapidocr import RapidOCR  # noqa: F401

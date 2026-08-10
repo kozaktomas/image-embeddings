@@ -5,9 +5,11 @@ import numpy as np
 import torch
 import open_clip
 from PIL import Image
-from fastapi import FastAPI, File, UploadFile, HTTPException, Body
+from fastapi import FastAPI, File, UploadFile, HTTPException, Body, Form
 from insightface.app import FaceAnalysis
 import warnings
+
+import ocr
 
 warnings.filterwarnings(
     "ignore",
@@ -62,6 +64,9 @@ with torch.inference_mode():
 print("Loading InsightFace model...")
 face_app = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
 face_app.prepare(ctx_id=0 if DEVICE == "cuda" else -1, det_size=(1600, 1600))
+print("Loading OCR engine...")
+ocr.load_engine()
+
 print("All models loaded. Starting server...")
 
 @app.get("/health")
@@ -70,6 +75,7 @@ def health():
     if torch.cuda.is_available():
         result["gpu_name"] = torch.cuda.get_device_name(0)
         result["gpu_memory_total"] = f"{torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB"
+    result["ocr"] = ocr.engine_info()
     return result
 
 @app.post("/embed/image", response_model=dict)
@@ -157,3 +163,20 @@ async def estimate_era(file: UploadFile = File(...)):
         "confidence": results[0]["confidence"],
         "all_eras": results
     }
+
+@app.post("/ocr/image", response_model=dict)
+async def ocr_image(
+    file: UploadFile = File(...),
+    min_confidence: float = Form(ocr.DEFAULT_MIN_CONFIDENCE),
+):
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Uploadni prosím image/* soubor.")
+
+    raw = await file.read()
+    try:
+        img = Image.open(io.BytesIO(raw))
+        img.load()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Obrázek se nepodařilo načíst: {exc}")
+
+    return ocr.extract_text(img, min_confidence=min_confidence)

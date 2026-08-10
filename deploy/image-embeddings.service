@@ -11,6 +11,8 @@ ExecStart=/opt/image-embeddings/venv/bin/uvicorn server:app --host 0.0.0.0 --por
 Restart=on-failure
 RestartSec=10
 Environment=HOME=/home/box
+Environment=OCR_MODELS_DIR=/opt/image-embeddings/models
+Environment=OCR_USE_CUDA=auto
 
 [Install]
 WantedBy=multi-user.target

@@ -14,8 +14,13 @@ python3 -m venv venv
 # PyTorch with CUDA (same as the production venv)
 ./venv/bin/pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 
+# transformers/sentencepiece/protobuf are for the SigLIP 2 tokenizer: unlike the old
+# ViT-L-14, it is a HuggingFace SentencePiece tokenizer (256k vocab) that open_clip
+# loads through transformers, so without these get_tokenizer() raises ModuleNotFoundError
+# at import time and the service never starts.
 ./venv/bin/pip install open_clip_torch fastapi uvicorn python-multipart \
-    "numpy<2" insightface pytest httpx PyYAML Pillow
+    "numpy<2" insightface pytest httpx PyYAML Pillow \
+    transformers sentencepiece protobuf
 
 # rapidocr depends on opencv_python -> install without dependencies, add the rest by hand.
 ./venv/bin/pip install --no-deps rapidocr

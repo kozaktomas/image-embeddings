@@ -4,8 +4,8 @@ FastAPI service for image and face embeddings using OpenCLIP and InsightFace.
 
 ## Features
 
-- **Image embeddings** - CLIP ViT-L-14 (768-dim vectors)
-- **Text embeddings** - CLIP ViT-L-14 (768-dim vectors, same space as image embeddings)
+- **Image embeddings** - SigLIP 2 so400m/14 @378 (1152-dim vectors)
+- **Text embeddings** - SigLIP 2 so400m/14 @378 (1152-dim vectors, same space as image embeddings)
 - **Face embeddings** - InsightFace buffalo_l (512-dim vectors)
 - **Era estimation** - Estimate photo decade using CLIP
 - **OCR** - text from photos via PP-OCRv5 (Latin script incl. Czech), with bounding boxes and confidence
@@ -106,8 +106,11 @@ source venv/bin/activate
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 
 # Install remaining dependencies
+# transformers/sentencepiece/protobuf back the SigLIP 2 tokenizer, which unlike the old
+# ViT-L-14 one is a HuggingFace SentencePiece tokenizer with a 256k vocabulary. Without
+# them open_clip.get_tokenizer() raises ModuleNotFoundError and the service never starts.
 pip install open_clip_torch fastapi uvicorn python-multipart \
-    "numpy<2" insightface
+    "numpy<2" insightface transformers sentencepiece protobuf
 
 # OCR: rapidocr depends on opencv_python, which collides with the headless build
 # (same cv2 namespace), so install it without dependencies.
@@ -123,7 +126,7 @@ pip uninstall -y onnxruntime opencv-python
 pip install --force-reinstall --no-deps "onnxruntime-gpu==1.22.0" "opencv-python-headless<4.10"
 
 # Pre-download models
-python -c "import open_clip; open_clip.create_model_and_transforms('ViT-L-14', pretrained='laion2b_s32b_b82k')"
+python -c "import open_clip; open_clip.create_model_and_transforms('ViT-SO400M-14-SigLIP2-378', pretrained='webli'); open_clip.get_tokenizer('ViT-SO400M-14-SigLIP2-378')"
 python -c "from insightface.app import FaceAnalysis; FaceAnalysis(name='buffalo_l', providers=['CPUExecutionProvider'])"
 OCR_MODELS_DIR=/opt/image-embeddings/models ./scripts/fetch_models.sh
 
@@ -148,12 +151,69 @@ Development and tests run on a GPU machine (`box`), not on the Raspberry Pi.
 ssh box 'cd ~/dev/image-embeddings && ./scripts/setup_dev_box.sh'
 
 # Full suite. CUDA is disabled here on purpose: the production service already
-# holds a CLIP ViT-L-14 on the GPU and a second copy does not fit in 8 GB.
+# holds the CLIP model on the GPU and a second copy does not fit in 8 GB.
 ssh box 'cd ~/dev/image-embeddings && CUDA_VISIBLE_DEVICES="" OCR_USE_CUDA=0 ./venv/bin/python -m pytest tests/ -v'
 
 # OCR tests again on the GPU, to cover the CUDA path (small footprint, fits).
 ssh box 'cd ~/dev/image-embeddings && ./venv/bin/python -m pytest tests/test_ocr_engine.py tests/test_ocr_helpers.py -v'
 ```
+
+### CLIP model
+
+The image/text tower is **SigLIP 2 so400m/14 @378** (`ViT-SO400M-14-SigLIP2-378`,
+`webli`, Apache 2.0), replacing the previous `ViT-L-14` / `laion2b_s32b_b82k`. On the
+benchmark that matches what this service is used for — type words, get photos — it moves
+COCO text→image R@1 from 46.1 to 55.8 (+21 % relative); zero-shot ImageNet goes 75.3 % →
+84.1 %. Numbers are from the [SigLIP 2 paper](https://arxiv.org/abs/2502.14786), Table 1.
+
+Environment variables: `CLIP_MODEL`, `CLIP_PRETRAINED`, `CLIP_PRECISION`
+(`auto` / `fp16` / `fp32`; `auto` means fp16 on CUDA and fp32 on CPU).
+
+**fp16 is a requirement, not a tuning knob.** Measured weight sizes:
+
+| Model | Params | fp32 | fp16 | dim |
+|---|---|---|---|---|
+| ViT-L-14 (previous) | 427.6M (visual 304.0M / text 123.7M) | 1631 MiB | 816 MiB | 768 |
+| SigLIP 2 so400m @378 | 1136.0M (visual 428.2M / text 707.8M) | 4334 MiB | 2167 MiB | 1152 |
+
+The 3070 has 8 GB shared with a co-resident `photo-enhancer` (3442 MiB), leaving ~4.3 GB.
+In fp32 this model does not fit — that is measured, not predicted: loading it in fp32
+dies with `torch.OutOfMemoryError` after reaching 4.20 GiB. In fp16 it fits with room to
+spare. Quality cost is nil in practice — SigLIP 2 was trained in bf16, and the consumer
+stores these vectors as fp16 `halfvec` anyway.
+
+Because of that ceiling, precision and device are handed to `open_clip` at construction
+rather than applied afterwards. `.to(cuda)` followed by `.half()` stages the full fp32
+model on the card first and OOMs during load, before the conversion that would have made
+it fit.
+
+Note the shape of the model: most of it is the *text* tower (708M of 1136M, mostly the
+256k-token vocabulary), while images are the hot path. If VRAM ever gets tight, moving the
+text tower to CPU frees ~1.3 GB and costs only the interactive query, which already has a
+timeout and a full-text fallback.
+
+### Measured: new model vs old
+
+Service footprint and end-to-end `POST /embed/image` (JPEG decode included), same 7 real
+photos, 3 runs each, on the RTX 3070:
+
+| | ViT-L-14 fp32 (previous) | SigLIP 2 fp16 (current) |
+|---|---|---|
+| VRAM, whole service | 1972 MiB | 2516 MiB |
+| VRAM peak under load | 1986 MiB | 2530 MiB |
+| Median | 0.084 s/photo | 0.091 s/photo |
+| p95 | 0.224 s | 0.202 s |
+| Throughput | 11.88 photos/s | 11.00 photos/s |
+| Interactive text query | 6.3 ms | 9.1 ms |
+
+The bigger model costs +544 MiB and 8 % throughput, not the 2× that parameter counts
+suggest: JPEG decode dominates a real request, so a heavier tower barely moves the total.
+Re-embedding a 20 664-photo library lands around 31 minutes against 29.
+
+**Changing the model is not just a restart.** The embedding width is part of the contract:
+consumers store the vectors in a fixed-width column, so a model change means a schema
+migration plus a full re-embed on their side. `/health` reports `clip.dim` so a consumer
+can verify the width before it starts writing.
 
 ### OCR models
 

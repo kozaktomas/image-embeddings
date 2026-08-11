@@ -21,6 +21,9 @@ RUN pip install --no-cache-dir torch torchvision --index-url https://download.py
 # ONNX Runtime CPU
 RUN pip install --no-cache-dir onnxruntime
 
+# transformers/sentencepiece/protobuf back the SigLIP 2 tokenizer (a HuggingFace
+# SentencePiece tokenizer with a 256k vocab, loaded by open_clip through transformers).
+# Without them get_tokenizer() fails at import and the service never starts.
 RUN pip install --no-cache-dir \
     open_clip_torch \
     Pillow \
@@ -29,7 +32,10 @@ RUN pip install --no-cache-dir \
     python-multipart \
     "numpy<2" \
     "opencv-python-headless<4.10" \
-    insightface
+    insightface \
+    transformers \
+    sentencepiece \
+    protobuf
 
 # RapidOCR depends on opencv_python, which would collide with opencv-python-headless
 # (same cv2 namespace) -> install without dependencies and add the rest by hand.
@@ -43,8 +49,9 @@ RUN pip install --no-cache-dir --no-deps rapidocr && \
 RUN pip uninstall -y opencv-python && \
     pip install --no-cache-dir --force-reinstall --no-deps "opencv-python-headless<4.10"
 
-# Pre-download models during build
-RUN python -c "import open_clip; open_clip.create_model_and_transforms('ViT-L-14', pretrained='laion2b_s32b_b82k')"
+# Pre-download models during build. The tokenizer is fetched too: it lives on the HF
+# hub for SigLIP 2, so skipping it would just move the download to first boot.
+RUN python -c "import open_clip; open_clip.create_model_and_transforms('ViT-SO400M-14-SigLIP2-378', pretrained='webli'); open_clip.get_tokenizer('ViT-SO400M-14-SigLIP2-378')"
 RUN python -c "from insightface.app import FaceAnalysis; FaceAnalysis(name='buffalo_l', providers=['CPUExecutionProvider'])"
 
 COPY server.py ocr.py ./

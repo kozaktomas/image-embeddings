@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Stáhne OCR modely (PP-OCRv5) z HuggingFace a připraví slovník znaků.
-# ModelScope, odkud RapidOCR stahuje ve výchozím stavu, je na této síti
-# blokovaný resolverem DNS4EU Protective — proto oficiální PaddlePaddle repa na HF.
+# Download the OCR models (PP-OCRv5) from HuggingFace and prepare the character
+# dictionary. RapidOCR downloads from ModelScope by default, but that domain is blocked
+# by the DNS4EU Protective resolver on this network, so the official PaddlePaddle
+# repositories on HuggingFace are used instead.
 set -euo pipefail
 
 MODELS_DIR="${OCR_MODELS_DIR:-$(cd "$(dirname "$0")/.." && pwd)/models}"
@@ -22,15 +23,15 @@ fetch() {
         echo "ok (cached): $(basename "$dest")"
         return
     fi
-    echo "stahuji: $(basename "$dest")"
+    echo "downloading: $(basename "$dest")"
     curl -fsSL -o "$dest.tmp" "$url"
     local got
     got="$(sha256sum "$dest.tmp" | cut -d' ' -f1)"
     if [ "$got" != "$want" ]; then
         rm -f "$dest.tmp"
-        echo "CHYBA: SHA256 nesouhlasi pro $url" >&2
-        echo "  ocekavano: $want" >&2
-        echo "  ziskano:   $got" >&2
+        echo "ERROR: SHA256 mismatch for $url" >&2
+        echo "  expected: $want" >&2
+        echo "  got:      $got" >&2
         exit 1
     fi
     mv "$dest.tmp" "$dest"
@@ -49,9 +50,9 @@ cfg = yaml.safe_load((models_dir / "latin_rec_inference.yml").read_text(encoding
 chars = cfg["PostProcess"]["character_dict"]
 out = models_dir / "latin_dict.txt"
 out.write_text("\n".join(chars) + "\n", encoding="utf-8")
-print(f"slovnik: {len(chars)} znaku -> {out}")
+print(f"dictionary: {len(chars)} characters -> {out}")
 missing = [c for c in "ěščřžýáíéůúňťď" if c not in chars]
 if missing:
-    raise SystemExit(f"CHYBA: ve slovniku chybi ceska diakritika: {missing}")
-print("ceska diakritika ve slovniku OK")
+    raise SystemExit(f"ERROR: Czech diacritics missing from the dictionary: {missing}")
+print("Czech diacritics present in the dictionary: OK")
 PY

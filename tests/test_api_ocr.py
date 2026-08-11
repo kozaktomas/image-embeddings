@@ -20,7 +20,7 @@ def _font(size: int) -> ImageFont.FreeTypeFont:
             return ImageFont.truetype(path, size)
         except OSError:
             continue
-    pytest.skip("DejaVu font neni k dispozici")
+    pytest.skip("DejaVu font is not available")
 
 
 def png_bytes(image: Image.Image) -> bytes:
@@ -37,14 +37,14 @@ def text_png(text: str) -> bytes:
 
 def test_rejects_non_image_content_type():
     response = client.post(
-        "/ocr/image", files={"file": ("data.txt", b"nejsem obrazek", "text/plain")}
+        "/ocr/image", files={"file": ("data.txt", b"not an image", "text/plain")}
     )
     assert response.status_code == 400
 
 
 def test_rejects_undecodable_file():
     response = client.post(
-        "/ocr/image", files={"file": ("broken.png", b"\x89PNG rozbite", "image/png")}
+        "/ocr/image", files={"file": ("broken.png", b"\x89PNG broken", "image/png")}
     )
     assert response.status_code == 400
 

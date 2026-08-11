@@ -15,7 +15,7 @@ def _font(size: int) -> ImageFont.FreeTypeFont:
             return ImageFont.truetype(path, size)
         except OSError:
             continue
-    pytest.skip("DejaVu font neni k dispozici")
+    pytest.skip("DejaVu font is not available")
 
 
 def render_text(text: str, size=(2000, 300), font_size=90) -> Image.Image:
@@ -43,14 +43,14 @@ def test_blank_image_returns_empty_result_not_error():
 
 
 def test_bboxes_stay_within_original_dimensions_for_large_image():
-    # Delsi strana > max_side_len (2000), takze RapidOCR obrazek zmensi.
-    # Bboxy se musi vratit v souradnicich puvodniho obrazku.
+    # Longer side > max_side_len (2000), so RapidOCR downscales the image.
+    # Bounding boxes must come back in the original image's coordinates.
     width, height = 4000, 1000
     image = render_text("VESELICE", size=(width, height), font_size=200)
 
     result = ocr.extract_text(image)
 
-    assert result["blocks"], "na velkem obrazku se nenasel zadny text"
+    assert result["blocks"], "no text found in the large image"
     for block in result["blocks"]:
         x_min, y_min, x_max, y_max = block["bbox"]
         assert 0 <= x_min < x_max <= width
@@ -78,7 +78,7 @@ def test_engine_info_reports_provider_and_model():
 
 
 def test_engine_info_reports_the_provider_actually_in_use():
-    # RapidOCR pri nefunkcni CUDA tise spadne na CPU. /health nesmi tvrdit opak.
+    # RapidOCR silently falls back to CPU when CUDA fails. /health must not claim otherwise.
     engine = ocr.load_engine()
     providers = engine.text_rec.session.session.get_providers()
     expected = (

@@ -23,11 +23,11 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Using device: {DEVICE}")
 
 # === MODEL CONFIG ===
-# 1) Default (rychlé, kvalitní, stabilní):
+# 1) Default (fast, good quality, stable):
 #    MODEL_NAME, PRETRAINED = "ViT-B-32", "laion2b_s34b_b79k"
-# 2) Lepší kvalita (pořád OK na 3070):
+# 2) Better quality (still fine on a 3070):
 #    MODEL_NAME, PRETRAINED = "ViT-B-16", "laion2b_s34b_b88k"
-# 3) Nejlepší kvalita (vyšší latency/VRAM):
+# 3) Best quality (higher latency/VRAM):
 #    MODEL_NAME, PRETRAINED = "ViT-L-14", "laion2b_s32b_b82k"
 
 MODEL_NAME, PRETRAINED = "ViT-L-14", "laion2b_s32b_b82k"
@@ -81,7 +81,7 @@ def health():
 @app.post("/embed/image", response_model=dict)
 async def embed_image(file: UploadFile = File(...)):
     if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="Uploadni prosím image/* soubor.")
+        raise HTTPException(status_code=400, detail="Please upload an image/* file.")
 
     raw = await file.read()
     img = Image.open(io.BytesIO(raw)).convert("RGB")
@@ -90,7 +90,7 @@ async def embed_image(file: UploadFile = File(...)):
 
     with torch.inference_mode():
         feat = model.encode_image(x)
-        feat = feat / feat.norm(dim=-1, keepdim=True)  # normalizace je praktická pro cosine similarity
+        feat = feat / feat.norm(dim=-1, keepdim=True)  # normalising makes cosine similarity straightforward
         vec: List[float] = feat[0].detach().float().cpu().tolist()
 
     return {"dim": len(vec), "embedding": vec, "model": MODEL_NAME, "pretrained": PRETRAINED}
@@ -112,7 +112,7 @@ async def embed_text(text: str = Body(..., embed=True)):
 @app.post("/embed/face", response_model=dict)
 async def embed_face(file: UploadFile = File(...)):
     if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="Uploadni prosím image/* soubor.")
+        raise HTTPException(status_code=400, detail="Please upload an image/* file.")
 
     raw = await file.read()
     img = Image.open(io.BytesIO(raw)).convert("RGB")
@@ -137,7 +137,7 @@ async def embed_face(file: UploadFile = File(...)):
 @app.post("/estimate/era", response_model=dict)
 async def estimate_era(file: UploadFile = File(...)):
     if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="Uploadni prosím image/* soubor.")
+        raise HTTPException(status_code=400, detail="Please upload an image/* file.")
 
     raw = await file.read()
     img = Image.open(io.BytesIO(raw)).convert("RGB")
@@ -170,13 +170,13 @@ async def ocr_image(
     min_confidence: float = Form(ocr.DEFAULT_MIN_CONFIDENCE),
 ):
     if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="Uploadni prosím image/* soubor.")
+        raise HTTPException(status_code=400, detail="Please upload an image/* file.")
 
     raw = await file.read()
     try:
         img = Image.open(io.BytesIO(raw))
         img.load()
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Obrázek se nepodařilo načíst: {exc}")
+        raise HTTPException(status_code=400, detail=f"Could not read the image: {exc}")
 
     return ocr.extract_text(img, min_confidence=min_confidence)

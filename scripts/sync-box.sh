@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
-# Synchronizuje repo z Pi na box. Git zustava na Pi, box nema pristup na GitHub.
+# Sync the repository to the GPU build machine. Git stays on the development host;
+# the build machine has no GitHub access.
+#
+# Override the target with BOX_HOST and BOX_DEST.
 set -euo pipefail
 
 REMOTE="${BOX_HOST:-box}"
-DEST="${BOX_DEST:-/home/panbotka/dev/image-embeddings}"
+DEST="${BOX_DEST:-\$HOME/dev/image-embeddings}"
 
+DEST="$(ssh "$REMOTE" "eval echo $DEST")"
 ssh "$REMOTE" "mkdir -p '$DEST'"
 rsync -a --delete \
     --exclude 'venv/' \
@@ -14,4 +18,4 @@ rsync -a --delete \
     --exclude '__pycache__/' \
     --exclude '.pytest_cache/' \
     ./ "$REMOTE:$DEST/"
-echo "synchronizovano -> $REMOTE:$DEST"
+echo "synced -> $REMOTE:$DEST"

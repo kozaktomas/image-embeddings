@@ -16,15 +16,15 @@ def test_polygon_to_bbox_accepts_numpy_array():
 
 def test_sort_reading_order_orders_rows_top_down_and_within_row_left_right():
     blocks = [
-        {"text": "vpravo", "bbox": [500.0, 10.0, 700.0, 40.0], "confidence": 0.9},
-        {"text": "dole", "bbox": [10.0, 200.0, 200.0, 230.0], "confidence": 0.9},
-        {"text": "vlevo", "bbox": [10.0, 12.0, 200.0, 42.0], "confidence": 0.9},
+        {"text": "right", "bbox": [500.0, 10.0, 700.0, 40.0], "confidence": 0.9},
+        {"text": "bottom", "bbox": [10.0, 200.0, 200.0, 230.0], "confidence": 0.9},
+        {"text": "left", "bbox": [10.0, 12.0, 200.0, 42.0], "confidence": 0.9},
     ]
-    assert [b["text"] for b in sort_reading_order(blocks)] == ["vlevo", "vpravo", "dole"]
+    assert [b["text"] for b in sort_reading_order(blocks)] == ["left", "right", "bottom"]
 
 
 def test_sort_reading_order_tolerates_slightly_tilted_line():
-    # Stejny radek, ale kazdy blok o kus niz - nesmi se rozpadnout na tri radky.
+    # Same line, each block a little lower - must not split into three rows.
     blocks = [
         {"text": "c", "bbox": [400.0, 24.0, 500.0, 54.0], "confidence": 0.9},
         {"text": "a", "bbox": [10.0, 10.0, 110.0, 40.0], "confidence": 0.9},
@@ -42,7 +42,7 @@ def test_build_result_filters_and_joins():
         [[10.0, 10.0], [200.0, 10.0], [200.0, 40.0], [10.0, 40.0]],
         [[10.0, 100.0], [200.0, 100.0], [200.0, 130.0], [10.0, 130.0]],
     ]
-    result = build_result(polygons, ["HOSPODA", "sum"], [0.97, 0.20], min_confidence=0.5)
+    result = build_result(polygons, ["HOSPODA", "noise"], [0.97, 0.20], min_confidence=0.5)
 
     assert result["text"] == "HOSPODA"
     assert result["blocks_count"] == 1

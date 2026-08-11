@@ -31,15 +31,15 @@ RUN pip install --no-cache-dir \
     "opencv-python-headless<4.10" \
     insightface
 
-# RapidOCR zavisi na opencv_python, ktere by kolidovalo s opencv-python-headless
-# (stejny cv2 namespace) -> instalace bez zavislosti a rucne doinstalovany zbytek.
+# RapidOCR depends on opencv_python, which would collide with opencv-python-headless
+# (same cv2 namespace) -> install without dependencies and add the rest by hand.
 RUN pip install --no-cache-dir --no-deps rapidocr && \
     pip install --no-cache-dir pyclipper "Shapely>=1.7.1" "omegaconf!=2.2.1" \
     colorlog six tqdm requests PyYAML
 
-# insightface si sam tahne plne opencv-python, ktere prebije headless variantu
-# a pak chybi libGL.so.1. Odinstalovat a headless nasadit znovu natvrdo --
-# odinstalace sourozence smaze i soubory, ktere vlastni jeho nahrada.
+# insightface pulls in full opencv-python, which shadows the headless build and then
+# needs libGL.so.1. Uninstall it and force-reinstall headless -- uninstalling a sibling
+# also deletes files owned by its replacement.
 RUN pip uninstall -y opencv-python && \
     pip install --no-cache-dir --force-reinstall --no-deps "opencv-python-headless<4.10"
 
@@ -50,7 +50,7 @@ RUN python -c "from insightface.app import FaceAnalysis; FaceAnalysis(name='buff
 COPY server.py ocr.py ./
 COPY scripts/fetch_models.sh scripts/
 
-# OCR modely z HuggingFace (v kontejneru bezi OCR na CPU)
+# OCR models from HuggingFace (OCR runs on CPU inside the container)
 ENV OCR_MODELS_DIR=/app/models
 ENV OCR_USE_CUDA=0
 RUN chmod +x scripts/fetch_models.sh && ./scripts/fetch_models.sh

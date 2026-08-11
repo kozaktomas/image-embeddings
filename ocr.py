@@ -1,4 +1,4 @@
-"""OCR nad fotkami: RapidOCR (PP-OCRv5, latinka) pres ONNX Runtime."""
+"""OCR for photos: RapidOCR (PP-OCRv5, Latin script) over ONNX Runtime."""
 
 import logging
 import os
@@ -22,17 +22,18 @@ _provider = None
 
 
 def polygon_to_bbox(polygon: Sequence[Sequence[float]]) -> List[float]:
-    """Prevede ctyrbodovy polygon na osove zarovnany bbox [x_min, y_min, x_max, y_max]."""
+    """Convert a four-point polygon to an axis-aligned [x_min, y_min, x_max, y_max]."""
     xs = [float(point[0]) for point in polygon]
     ys = [float(point[1]) for point in polygon]
     return [min(xs), min(ys), max(xs), max(ys)]
 
 
 def sort_reading_order(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Seradi bloky ve ctecim poradi: radky shora dolu, uvnitr radku zleva doprava.
+    """Sort blocks into reading order: rows top to bottom, left to right within a row.
 
-    Bloky se do radku seskupuji podle stredu na ose y s toleranci poloviny medianove
-    vysky bloku. Bez te tolerance by mirne nakloneny napis skoncil jako nekolik radku.
+    Blocks are grouped into rows by their vertical centre, with a tolerance of half the
+    median block height. Without that tolerance a slightly tilted sign would break apart
+    into several rows.
     """
     if not blocks:
         return []
@@ -65,9 +66,9 @@ def build_result(
     scores: Optional[Sequence[float]],
     min_confidence: float,
 ) -> Dict[str, Any]:
-    """Slozi telo odpovedi z vystupu RapidOCR.
+    """Assemble the response body from RapidOCR output.
 
-    Prazdny vysledek (fotka bez textu) je normalni stav, ne chyba.
+    An empty result (a photo without text) is a normal outcome, not an error.
     """
     if polygons is None or texts is None or scores is None:
         blocks: List[Dict[str, Any]] = []
@@ -93,10 +94,11 @@ def build_result(
 
 
 def _detect_actual_provider(engine) -> str:
-    """Zjisti, na cem OCR opravdu bezi.
+    """Report which execution provider the engine actually ended up using.
 
-    RapidOCR pri nefunkcni CUDA jen zaloguje varovani a tise spadne na CPU, takze
-    "chtel jsem CUDA" a "bezim na CUDA" nejsou totez. /health musi hlasit realitu.
+    When CUDA does not work, RapidOCR only logs a warning and silently falls back to
+    CPU, so "CUDA was requested" and "CUDA is running" are not the same thing.
+    /health has to report reality.
     """
     for part in (getattr(engine, "text_rec", None), getattr(engine, "text_det", None)):
         session = getattr(getattr(part, "session", None), "session", None)
@@ -109,12 +111,12 @@ def _detect_actual_provider(engine) -> str:
 
 
 def _resolve_provider() -> bool:
-    """Rozhodne, jestli se pojede na CUDA. Vraci True pro CUDA, False pro CPU."""
+    """Decide whether to run on CUDA. Returns True for CUDA, False for CPU."""
     import onnxruntime
 
-    # ONNX Runtime si CUDA/cuDNN knihovny natahne z nvidia-* balicku, ktere do venvu
-    # prinesl torch. Bez tohohle je CUDAExecutionProvider sice "available", ale
-    # nenacte se a inference tise spadne na CPU.
+    # ONNX Runtime picks up the CUDA/cuDNN libraries from the nvidia-* packages that
+    # torch brought into the venv. Without this, CUDAExecutionProvider reports as
+    # "available" but fails to load, and inference silently falls back to CPU.
     if hasattr(onnxruntime, "preload_dlls"):
         onnxruntime.preload_dlls()
 
@@ -123,20 +125,20 @@ def _resolve_provider() -> bool:
     if USE_CUDA_SETTING in {"1", "true", "yes"}:
         if not cuda_available:
             raise RuntimeError(
-                "OCR_USE_CUDA=1, ale CUDAExecutionProvider neni k dispozici. "
-                "Zkontroluj instalaci onnxruntime-gpu."
+                "OCR_USE_CUDA=1, but CUDAExecutionProvider is not available. "
+                "Check the onnxruntime-gpu installation."
             )
         return True
     if USE_CUDA_SETTING in {"0", "false", "no"}:
         return False
 
     if not cuda_available:
-        logger.warning("CUDAExecutionProvider neni k dispozici, OCR pojede na CPU.")
+        logger.warning("CUDAExecutionProvider is not available, OCR will run on CPU.")
     return cuda_available
 
 
 def load_engine():
-    """Nacte RapidOCR nad lokalnimi modely. Chybejici model ma shodit start sluzby."""
+    """Load RapidOCR over the local models. A missing model must fail service startup."""
     global _engine, _provider
 
     if _engine is not None:
@@ -151,7 +153,7 @@ def load_engine():
     for path in (det_path, rec_path, dict_path):
         if not path.exists():
             raise FileNotFoundError(
-                f"Chybi OCR model: {path}. Spust ./scripts/fetch_models.sh"
+                f"Missing OCR model: {path}. Run ./scripts/fetch_models.sh"
             )
 
     use_cuda = _resolve_provider()
@@ -161,7 +163,7 @@ def load_engine():
             "Det.model_path": str(det_path),
             "Rec.model_path": str(rec_path),
             "Rec.rec_keys_path": str(dict_path),
-            # RapidOCR tyhle tri validuje jako Enum, ne jako retezec.
+            # RapidOCR validates these three as enums, not as strings.
             "Rec.lang_type": LangRec.LATIN,
             "Rec.ocr_version": OCRVersion.PPOCRV5,
             "Rec.model_type": ModelType.MOBILE,
@@ -172,25 +174,25 @@ def load_engine():
     _provider = _detect_actual_provider(_engine)
     if use_cuda and _provider != "CUDAExecutionProvider":
         message = (
-            "CUDA byla vyzadana, ale RapidOCR bezi na CPU. Nejcastejsi pricina: "
-            "onnxruntime-gpu postavene na jine verzi CUDA, nez je na stroji "
-            "(1.28 vyzaduje CUDA 13, tenhle stroj ma 12.8 -> pouzij 1.22)."
+            "CUDA was requested but RapidOCR is running on CPU. Most common cause: "
+            "onnxruntime-gpu built against a different CUDA version than the machine "
+            "provides (1.28 requires CUDA 13; on CUDA 12.x use 1.22)."
         )
         if USE_CUDA_SETTING in {"1", "true", "yes"}:
             raise RuntimeError(message)
         logger.warning(message)
 
-    logger.info("OCR engine nacten (%s)", _provider)
+    logger.info("OCR engine loaded (%s)", _provider)
     return _engine
 
 
 def get_engine():
-    """Vrati nacteny engine, pripadne ho lene nacte."""
+    """Return the loaded engine, loading it lazily if needed."""
     return load_engine()
 
 
 def engine_info() -> Dict[str, Any]:
-    """Informace o OCR pro /health."""
+    """OCR information for /health."""
     if _provider is None:
         load_engine()
     return {"provider": _provider, "model": MODEL_LABEL, "lang": LANG}
@@ -199,7 +201,7 @@ def engine_info() -> Dict[str, Any]:
 def extract_text(
     image: "Image.Image", min_confidence: Optional[float] = None
 ) -> Dict[str, Any]:
-    """Precte text z obrazku a vrati telo odpovedi endpointu /ocr/image."""
+    """Read text from an image and return the /ocr/image response body."""
     threshold = (
         DEFAULT_MIN_CONFIDENCE if min_confidence is None else float(min_confidence)
     )

@@ -176,13 +176,39 @@ Environment variables: `CLIP_MODEL`, `CLIP_PRETRAINED`, `CLIP_PRECISION`
 | ViT-L-14 (previous) | 427.6M (visual 304.0M / text 123.7M) | 1631 MiB | 816 MiB | 768 |
 | SigLIP 2 so400m @378 | 1136.0M (visual 428.2M / text 707.8M) | 4334 MiB | 2167 MiB | 1152 |
 
-The 3070 has 8 GB shared with a co-resident `photo-enhancer` (3442 MiB), which leaves
-roughly 4.7 GB. In fp32 this model does not fit; in fp16 it does. Quality cost is nil in
-practice — SigLIP 2 was trained in bf16, and the consumer stores these vectors as fp16
-`halfvec` anyway. Note that most of the model is the *text* tower (708M of 1136M, mostly
-the 256k-token vocabulary), while images are the hot path: if VRAM ever gets tight, moving
-the text tower to CPU frees ~1.3 GB and costs only the interactive query, which already
-has a timeout and a full-text fallback.
+The 3070 has 8 GB shared with a co-resident `photo-enhancer` (3442 MiB), leaving ~4.3 GB.
+In fp32 this model does not fit — that is measured, not predicted: loading it in fp32
+dies with `torch.OutOfMemoryError` after reaching 4.20 GiB. In fp16 it fits with room to
+spare. Quality cost is nil in practice — SigLIP 2 was trained in bf16, and the consumer
+stores these vectors as fp16 `halfvec` anyway.
+
+Because of that ceiling, precision and device are handed to `open_clip` at construction
+rather than applied afterwards. `.to(cuda)` followed by `.half()` stages the full fp32
+model on the card first and OOMs during load, before the conversion that would have made
+it fit.
+
+Note the shape of the model: most of it is the *text* tower (708M of 1136M, mostly the
+256k-token vocabulary), while images are the hot path. If VRAM ever gets tight, moving the
+text tower to CPU frees ~1.3 GB and costs only the interactive query, which already has a
+timeout and a full-text fallback.
+
+### Measured: new model vs old
+
+Service footprint and end-to-end `POST /embed/image` (JPEG decode included), same 7 real
+photos, 3 runs each, on the RTX 3070:
+
+| | ViT-L-14 fp32 (previous) | SigLIP 2 fp16 (current) |
+|---|---|---|
+| VRAM, whole service | 1972 MiB | 2516 MiB |
+| VRAM peak under load | 1986 MiB | 2530 MiB |
+| Median | 0.084 s/photo | 0.091 s/photo |
+| p95 | 0.224 s | 0.202 s |
+| Throughput | 11.88 photos/s | 11.00 photos/s |
+| Interactive text query | 6.3 ms | 9.1 ms |
+
+The bigger model costs +544 MiB and 8 % throughput, not the 2× that parameter counts
+suggest: JPEG decode dominates a real request, so a heavier tower barely moves the total.
+Re-embedding a 20 664-photo library lands around 31 minutes against 29.
 
 **Changing the model is not just a restart.** The embedding width is part of the contract:
 consumers store the vectors in a fixed-width column, so a model change means a schema

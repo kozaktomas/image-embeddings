@@ -43,12 +43,17 @@ PRECISION = os.environ.get("CLIP_PRECISION", "auto").strip().lower()
 USE_HALF = PRECISION == "fp16" or (PRECISION == "auto" and DEVICE == "cuda")
 
 print(f"Loading CLIP model {MODEL_NAME} ({PRETRAINED}), half={USE_HALF}...")
+# precision and device are passed to open_clip rather than applied afterwards, because
+# .to(cuda) followed by .half() would stage the full fp32 model on the GPU first and
+# peak at 4334 MiB during load -- more than the card has free, so it OOMs before the
+# conversion that would have made it fit. Converting before the transfer keeps the peak
+# at the fp16 size.
 model, _, preprocess = open_clip.create_model_and_transforms(
-    MODEL_NAME, pretrained=PRETRAINED
+    MODEL_NAME,
+    pretrained=PRETRAINED,
+    precision="fp16" if USE_HALF else "fp32",
+    device=DEVICE,
 )
-model = model.to(DEVICE)
-if USE_HALF:
-    model = model.half()
 model = model.eval()
 tokenizer = open_clip.get_tokenizer(MODEL_NAME)
 

@@ -13,6 +13,13 @@ RestartSec=10
 Environment=HOME=/home/box
 Environment=OCR_MODELS_DIR=/opt/image-embeddings/models
 Environment=OCR_USE_CUDA=auto
+# Pinned rather than left to the code default so the running model is visible here, and
+# so a rollback is an edit plus a restart. CLIP_PRECISION=auto means fp16 on CUDA, which
+# is what makes the 1136M-parameter model fit next to InsightFace, OCR and the
+# co-resident photo-enhancer on an 8 GB card.
+Environment=CLIP_MODEL=ViT-SO400M-14-SigLIP2-378
+Environment=CLIP_PRETRAINED=webli
+Environment=CLIP_PRECISION=auto
 
 [Install]
 WantedBy=multi-user.target

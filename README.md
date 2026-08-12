@@ -265,6 +265,27 @@ mode. Not 404: the route exists and the service is healthy, the capability is si
 switched off, while a 404 reads as a wrong URL or a stale image. `/health` reports `mode`,
 and still reports `clip.dim` so a consumer can verify the width in either mode.
 
+#### Measured in production
+
+On `prodvps` (8 vCPU Skylake @ 2.0 GHz with AVX-512, `TORCH_NUM_THREADS=6`, `mem_limit: 6g`),
+20 sequential queries:
+
+| | text-only on prodvps | full on the 3070 |
+|---|---|---|
+| `/embed/text` median | 0.414 s | 0.0091 s |
+| p95 | 0.481 s | — |
+| RSS, steady | 3.29 GiB (55 % of the limit) | — |
+
+About 45× slower than the GPU, and still under a tenth of kukátko's 5-second budget, which
+is why this does not need ONNX or quantisation. RSS confirms the limit is sized for the
+4.3 GB load peak rather than the steady state. Cold start to a `/health` answer is roughly
+40 s, polled rather than instrumented.
+
+**The vectors match the GPU's.** Cosine between a `prodvps` text embedding and the box's,
+same query, over five Czech and English queries: **1.00000** each. That is the number that
+matters — the stored 1152-dim image vectors were written by the fp16 GPU path, and search
+compares them against fp32 CPU query vectors.
+
 Environment variables: `EMBED_MODE` (`full` / `text`), `TORCH_NUM_THREADS`. The second is
 not a tuning knob — torch sizes its thread pool from the host CPU count rather than the
 cgroup quota, so inside a container limited to fewer CPUs than the host has it starts too

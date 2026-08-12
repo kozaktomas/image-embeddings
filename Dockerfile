@@ -16,6 +16,15 @@ WORKDIR /app
 
 RUN pip install --upgrade pip
 
+# numpy has to stay on 1.x: the opencv and onnxruntime wheels are built against the 1.x
+# ABI and fail at import with "numpy.core.multiarray failed to import" under numpy 2.
+# This used to hold by accident, because one pip command installed numpy, opencv and
+# insightface together and the resolver saw the pin. Splitting the install across stages
+# broke that -- `pip install insightface` pulled numpy 2 back in -- so the pin is a
+# constraint file that applies to every later pip command instead.
+RUN echo "numpy<2" > /etc/pip-constraints.txt
+ENV PIP_CONSTRAINT=/etc/pip-constraints.txt
+
 # PyTorch CPU-only (much smaller)
 RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
@@ -28,7 +37,7 @@ RUN pip install --no-cache-dir \
     fastapi \
     uvicorn \
     python-multipart \
-    "numpy<2" \
+    numpy \
     transformers \
     sentencepiece \
     protobuf

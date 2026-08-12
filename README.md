@@ -9,12 +9,22 @@ FastAPI service for image and face embeddings using OpenCLIP and InsightFace.
 - **Face embeddings** - InsightFace buffalo_l (512-dim vectors)
 - **Era estimation** - Estimate photo decade using CLIP
 - **OCR** - text from photos via PP-OCRv5 (Latin script incl. Czech), with bounding boxes and confidence
+- **Text-only mode** - `EMBED_MODE=text` serves `/embed/text` alone, on CPU, for a machine with no GPU
 
 ## Build & Run
 
 ```bash
 podman build -t emb .
 podman run -p 8000:8000 emb
+```
+
+Two targets come out of the one Dockerfile. `full` is the default and is what the
+command above builds; `text` is the CPU-only image described in
+[Text-only mode](#text-only-mode).
+
+```bash
+podman build --target text -t emb-text .
+podman run -p 8000:8000 emb-text
 ```
 
 ## API Endpoints
@@ -156,6 +166,18 @@ ssh box 'cd ~/dev/image-embeddings && CUDA_VISIBLE_DEVICES="" OCR_USE_CUDA=0 ./v
 
 # OCR tests again on the GPU, to cover the CUDA path (small footprint, fits).
 ssh box 'cd ~/dev/image-embeddings && ./venv/bin/python -m pytest tests/test_ocr_engine.py tests/test_ocr_helpers.py -v'
+
+# Text-only mode. A separate invocation because the mode is read when server.py is
+# imported: flipping it inside a running process would mean rebuilding the model.
+ssh box 'cd ~/dev/image-embeddings && EMBED_MODE=text CUDA_VISIBLE_DEVICES="" ./venv/bin/python -m pytest tests/ -v'
+```
+
+Both invocations skip what does not apply to their mode, so the counts differ and
+neither should report zero skips:
+
+```
+full   31 passed, 7 skipped
+text   29 passed, 9 skipped
 ```
 
 ### CLIP model
@@ -214,6 +236,39 @@ Re-embedding a 20 664-photo library lands around 31 minutes against 29.
 consumers store the vectors in a fixed-width column, so a model change means a schema
 migration plus a full re-embed on their side. `/health` reports `clip.dim` so a consumer
 can verify the width before it starts writing.
+
+### Text-only mode
+
+`EMBED_MODE=text` loads the text tower and nothing else — no visual tower, no InsightFace,
+no OCR engine. It exists for `prodvps`, which has no GPU and runs this for one reason:
+kukátko's search box. Embedding a query is the only call a person waits on, and the box
+that used to serve it is usually powered off, so semantic search quietly degraded to
+full-text. Queue work (image, face, OCR) stays on the box and still wakes it over
+Wake-on-LAN.
+
+It fits on a CPU because the text side is small work: a fixed 64-token context over 27
+layers of width 1152, roughly 53 GFLOPs per query, against kukátko's 5-second budget for
+an interactive search.
+
+| | |
+|---|---|
+| Text tower | 707.8M of the model's 1136M params, 2.7 GB fp32 |
+| Visual tower, dropped at load | 428.2M params, ~1.7 GB fp32 |
+| Peak during load | the full 4.3 GB |
+
+open_clip cannot build one tower without the other, so the load peaks at the full model
+before `model.visual` is released. A memory limit has to clear that peak, not the steady
+state.
+
+`/embed/image`, `/embed/face`, `/estimate/era` and `/ocr/image` answer **503** naming the
+mode. Not 404: the route exists and the service is healthy, the capability is simply
+switched off, while a 404 reads as a wrong URL or a stale image. `/health` reports `mode`,
+and still reports `clip.dim` so a consumer can verify the width in either mode.
+
+Environment variables: `EMBED_MODE` (`full` / `text`), `TORCH_NUM_THREADS`. The second is
+not a tuning knob — torch sizes its thread pool from the host CPU count rather than the
+cgroup quota, so inside a container limited to fewer CPUs than the host has it starts too
+many threads and they contend with each other. Set it to the container's CPU limit.
 
 ### OCR models
 

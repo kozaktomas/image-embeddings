@@ -4,9 +4,15 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image, ImageDraw, ImageFont
 
-from server import app
+from server import TEXT_ONLY, app
 
 client = TestClient(app)
+
+# Text-only mode loads no OCR engine and answers /ocr/image with 503, which
+# tests/test_text_mode.py asserts. Nothing here applies there.
+pytestmark = pytest.mark.skipif(
+    TEXT_ONLY, reason="EMBED_MODE=text loads no OCR engine"
+)
 
 FONT_CANDIDATES = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",

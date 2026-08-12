@@ -30,20 +30,39 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Extract metadata (tags, labels) for Docker
-      # https://github.com/docker/metadata-action
-      - name: Extract Docker metadata
+      # Both targets are built in one job on purpose. They share the `base` stage, which
+      # downloads a 4.5 GB checkpoint; separate matrix jobs would not share a builder and
+      # would download it twice.
+      - name: Extract Docker metadata (full)
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
 
+      - name: Extract Docker metadata (text-only)
+        id: meta-text
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: suffix=-text,onlatest=true
+
       # Build and push Docker image with Buildx (don't push on PR)
       # https://github.com/docker/build-push-action
-      - name: Build and push Docker image
+      - name: Build and push Docker image (full)
         uses: docker/build-push-action@v6
         with:
           context: .
+          target: full
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      # The VPS image: CPU-only, text tower only. Published as :main-text.
+      - name: Build and push Docker image (text-only)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: text
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta-text.outputs.tags }}
+          labels: ${{ steps.meta-text.outputs.labels }}

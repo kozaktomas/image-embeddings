@@ -1,12 +1,19 @@
 import io
 import math
 
+import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from server import EMBED_DIM, app
+from server import EMBED_DIM, TEXT_ONLY, app
 
 client = TestClient(app)
+
+# The image endpoints are absent by design when the service runs text-only, so these
+# skip rather than fail there. Text-only behaviour has its own file.
+full_mode_only = pytest.mark.skipif(
+    TEXT_ONLY, reason="EMBED_MODE=text serves /embed/text only"
+)
 
 
 def png_bytes(image: Image.Image) -> bytes:
@@ -43,9 +50,15 @@ def test_health_reports_the_width_the_endpoints_return():
 
     assert body["clip"]["dim"] == EMBED_DIM
     assert body["clip"]["precision"] in {"fp16", "fp32"}
-    assert len(embed_image("red")) == EMBED_DIM
+    # The claim is about what the endpoints hand back, so check one that is actually
+    # served -- which differs by mode.
+    if TEXT_ONLY:
+        assert len(embed_text("a photograph of a dog")) == EMBED_DIM
+    else:
+        assert len(embed_image("red")) == EMBED_DIM
 
 
+@full_mode_only
 def test_image_embedding_is_unit_length():
     """Cosine similarity downstream is a plain dot product, which assumes unit vectors."""
     vec = embed_image("red")
@@ -61,6 +74,7 @@ def test_text_embedding_matches_the_image_width():
     assert math.isclose(math.sqrt(cosine(vec, vec)), 1.0, rel_tol=1e-3)
 
 
+@full_mode_only
 def test_image_and_text_share_a_space():
     """The whole point of the service: the right caption wins on a dot product.
 
@@ -74,6 +88,7 @@ def test_image_and_text_share_a_space():
     assert cosine(red, match) > cosine(red, mismatch)
 
 
+@full_mode_only
 def test_rejects_non_image_content_type():
     response = client.post(
         "/embed/image", files={"file": ("data.txt", b"not an image", "text/plain")}

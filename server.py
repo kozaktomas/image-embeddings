@@ -1,3 +1,4 @@
+import gc
 import io
 import os
 from typing import List
@@ -7,9 +8,10 @@ import torch
 import open_clip
 from PIL import Image
 from fastapi import FastAPI, File, UploadFile, HTTPException, Body, Form
-from insightface.app import FaceAnalysis
 import warnings
 
+# Safe to import unconditionally even in the text-only image, which ships neither
+# onnxruntime nor rapidocr: ocr.py imports both inside functions, not at module level.
 import ocr
 
 warnings.filterwarnings(
@@ -22,6 +24,26 @@ app = FastAPI(title="Embeddings API (OpenCLIP + InsightFace)")
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Using device: {DEVICE}")
+
+# === MODE CONFIG ===
+# "full" is the box: GPU, every endpoint. "text" is the VPS, which has no GPU and exists
+# for one reason -- kukátko's search box. Embedding a query is the only interactive call
+# in the system, and pointing it at a machine that is usually powered off is why semantic
+# search silently degrades to full-text. Text-only keeps the 707.8M-parameter text tower
+# and drops the rest: no visual tower, no face model, no OCR engine.
+EMBED_MODE = os.environ.get("EMBED_MODE", "full").strip().lower()
+if EMBED_MODE not in {"full", "text"}:
+    raise SystemExit(f"EMBED_MODE must be 'full' or 'text', got {EMBED_MODE!r}")
+TEXT_ONLY = EMBED_MODE == "text"
+print(f"Mode: {EMBED_MODE}")
+
+# torch sizes its thread pool from the host CPU count, not from the cgroup quota, so in a
+# container limited to fewer CPUs than the host has it starts too many threads and they
+# contend with each other. Set this to the container's CPU limit.
+TORCH_THREADS = os.environ.get("TORCH_NUM_THREADS", "").strip()
+if TORCH_THREADS:
+    torch.set_num_threads(int(TORCH_THREADS))
+    print(f"torch threads: {torch.get_num_threads()}")
 
 # === MODEL CONFIG ===
 # SigLIP 2 so400m at 378px. It beats the previous ViT-L-14/laion2b on every metric
@@ -55,6 +77,16 @@ model, _, preprocess = open_clip.create_model_and_transforms(
     device=DEVICE,
 )
 model = model.eval()
+
+# The visual tower is 428.2M of the model's 1136M parameters, about 1.7 GB in fp32, and
+# encode_text() never touches it -- it goes through model.text. open_clip has no way to
+# build one tower without the other, so the load still peaks at the full 4.3 GB; this
+# gives most of it straight back. Sizing a memory limit for this service means clearing
+# the peak, not the steady state.
+if TEXT_ONLY:
+    model.visual = None
+    gc.collect()
+
 tokenizer = open_clip.get_tokenizer(MODEL_NAME)
 
 # The dtype the towers expect. preprocess() always produces float32, so image tensors
@@ -86,30 +118,56 @@ LOGIT_SCALE = (
     float(model.logit_scale.detach().exp()) if hasattr(model, "logit_scale") else 100.0
 )
 
-# Pre-compute text embeddings for eras
-with torch.inference_mode():
-    era_texts = [prompt for _, _, prompt in ERA_PROMPTS]
-    era_tokens = tokenizer(era_texts).to(DEVICE)
-    era_features = model.encode_text(era_tokens).float()
-    era_features = era_features / era_features.norm(dim=-1, keepdim=True)
+# Pre-compute text embeddings for eras. Skipped in text-only mode: these exist solely to
+# be compared against an image embedding, and /estimate/era is not served there.
+era_features = None
+if not TEXT_ONLY:
+    with torch.inference_mode():
+        era_texts = [prompt for _, _, prompt in ERA_PROMPTS]
+        era_tokens = tokenizer(era_texts).to(DEVICE)
+        era_features = model.encode_text(era_tokens).float()
+        era_features = era_features / era_features.norm(dim=-1, keepdim=True)
 
 # === INSIGHTFACE CONFIG ===
-# buffalo_l uses ResNet100 for face recognition (512-dim embeddings)
-print("Loading InsightFace model...")
-face_app = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
-face_app.prepare(ctx_id=0 if DEVICE == "cuda" else -1, det_size=(1600, 1600))
-print("Loading OCR engine...")
-ocr.load_engine()
+# buffalo_l uses ResNet100 for face recognition (512-dim embeddings). Both this and the
+# OCR engine stay unloaded in text-only mode, and insightface is imported here rather than
+# at the top of the module so the text-only image does not have to ship it at all.
+face_app = None
+if not TEXT_ONLY:
+    from insightface.app import FaceAnalysis
+
+    print("Loading InsightFace model...")
+    face_app = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
+    face_app.prepare(ctx_id=0 if DEVICE == "cuda" else -1, det_size=(1600, 1600))
+    print("Loading OCR engine...")
+    ocr.load_engine()
 
 print("All models loaded. Starting server...")
 
+
+def require_full_mode(capability: str) -> None:
+    """Reject an image-side call when the service is running text-only.
+
+    503 rather than 404: the route exists and the service is healthy, it simply has no
+    visual tower, face model or OCR engine loaded. A 404 would read as a wrong URL or a
+    stale image and send the caller looking in the wrong place.
+    """
+    if TEXT_ONLY:
+        raise HTTPException(
+            status_code=503,
+            detail=f"{capability} is unavailable: EMBED_MODE=text serves /embed/text only.",
+        )
+
 @app.get("/health")
 def health():
-    result = {"device": DEVICE, "cuda": torch.cuda.is_available()}
+    result = {"mode": EMBED_MODE, "device": DEVICE, "cuda": torch.cuda.is_available()}
     if torch.cuda.is_available():
         result["gpu_name"] = torch.cuda.get_device_name(0)
         result["gpu_memory_total"] = f"{torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB"
-    result["ocr"] = ocr.engine_info()
+    # engine_info() loads the engine lazily, so it must not be reached in text-only mode:
+    # that image ships neither onnxruntime nor rapidocr and /health would raise instead of
+    # answering -- turning the one endpoint that reports trouble into trouble of its own.
+    result["ocr"] = {"enabled": False} if TEXT_ONLY else ocr.engine_info()
     # Consumers store these vectors in a fixed-width column, so let them check the
     # width they are about to receive instead of discovering it on a failed insert.
     result["clip"] = {
@@ -122,6 +180,7 @@ def health():
 
 @app.post("/embed/image", response_model=dict)
 async def embed_image(file: UploadFile = File(...)):
+    require_full_mode("Image embedding")
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Please upload an image/* file.")
 
@@ -155,6 +214,7 @@ async def embed_text(text: str = Body(..., embed=True)):
 
 @app.post("/embed/face", response_model=dict)
 async def embed_face(file: UploadFile = File(...)):
+    require_full_mode("Face embedding")
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Please upload an image/* file.")
 
@@ -180,6 +240,7 @@ async def embed_face(file: UploadFile = File(...)):
 
 @app.post("/estimate/era", response_model=dict)
 async def estimate_era(file: UploadFile = File(...)):
+    require_full_mode("Era estimation")
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Please upload an image/* file.")
 
@@ -213,6 +274,7 @@ async def ocr_image(
     file: UploadFile = File(...),
     min_confidence: float = Form(ocr.DEFAULT_MIN_CONFIDENCE),
 ):
+    require_full_mode("OCR")
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Please upload an image/* file.")
 

@@ -17,6 +17,15 @@ jobs:
       packages: write
 
     steps:
+      # The full image carries CUDA torch (~4 GB of nvidia-* wheels) on top of the 4.5 GB
+      # checkpoint, and the builder holds both targets at once. The stock runner has ~14 GB
+      # free, which is not enough; dropping toolchains this job never uses frees ~30 GB.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          df -h /
+
       - name: Checkout repository
         uses: actions/checkout@v4
 

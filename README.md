@@ -15,8 +15,14 @@ FastAPI service for image and face embeddings using OpenCLIP and InsightFace.
 
 ```bash
 podman build -t emb .
-podman run -p 8000:8000 emb
+podman run --device nvidia.com/gpu=all -p 8000:8000 emb   # podman (CDI)
+docker run --gpus all -p 8000:8000 emb                    # docker
 ```
+
+The `full` image is built for the GPU: CUDA torch (cu128) and `onnxruntime-gpu` 1.22. The
+CUDA runtime comes inside the image as pip wheels, so the host only needs the NVIDIA
+driver and the container toolkit. Without a GPU it still starts and runs on CPU. Check
+`/health`: `"device": "cuda"` and `"ocr": {"provider": "CUDAExecutionProvider"}`.
 
 Two targets come out of the one Dockerfile. `full` is the default and is what the
 command above builds; `text` is the CPU-only image described in
@@ -123,8 +129,9 @@ pip install open_clip_torch fastapi uvicorn python-multipart \
     "numpy<2" insightface transformers sentencepiece protobuf
 
 # OCR: rapidocr depends on opencv_python, which collides with the headless build
-# (same cv2 namespace), so install it without dependencies.
-pip install --no-deps rapidocr
+# (same cv2 namespace), so install it without dependencies. Pinned: 3.10 loads its
+# models lazily, which ocr.py reads as "running on CPU".
+pip install --no-deps "rapidocr==3.9.2"
 pip install pyclipper "Shapely>=1.7.1" "omegaconf!=2.2.1" colorlog six tqdm requests PyYAML coloredlogs
 
 # onnxruntime-gpu is pinned on purpose: 1.28 is built against CUDA 13, while this

@@ -7,6 +7,9 @@ FastAPI service for image and face embeddings using OpenCLIP and InsightFace.
 - **Image embeddings** - SigLIP 2 so400m/14 @378 (1152-dim vectors)
 - **Text embeddings** - SigLIP 2 so400m/14 @378 (1152-dim vectors, same space as image embeddings)
 - **Face embeddings** - InsightFace buffalo_l (512-dim vectors)
+- **Face attributes** - per face: 5 keypoints, age, gender, head pose (pitch/yaw/roll), eye openness,
+  sharpness and size; optionally the 106 landmarks. Age and gender are a weak signal, see
+  [Face Embedding](#face-embedding)
 - **Era estimation** - Estimate photo decade using CLIP
 - **OCR** - text from photos via PP-OCRv5 (Latin script incl. Czech), with bounding boxes and confidence
 - **Text-only mode** - `EMBED_MODE=text` serves `/embed/text` alone, on CPU, for a machine with no GPU
@@ -56,10 +59,60 @@ Body: {"text": "a photo of a cat"}
 
 ### Face Embedding
 ```
-POST /embed/face
+POST /embed/face[?landmarks=1]
 Content-Type: multipart/form-data
 Body: file=<image>
 ```
+
+One entry per detected face. `face_index`, `dim`, `embedding`, `bbox` and `det_score`
+are unchanged from before; everything after them was added in `attributes_version` 1 and
+comes from models buffalo_l was already running for every face (only the eye ratio and the
+sharpness are computed on top, 0.2–0.3 ms per face on CPU).
+
+```json
+{
+  "faces_count": 1,
+  "faces": [
+    {
+      "face_index": 0,
+      "dim": 512,
+      "embedding": [0.012, "…"],
+      "bbox": [412.3, 118.9, 530.1, 270.4],
+      "det_score": 0.87,
+      "kps": [[448.1, 180.2], [500.7, 179.5], [476.0, 210.3], [452.9, 237.8], [497.4, 237.1]],
+      "age": 31,
+      "gender": "female",
+      "pose": {"pitch": -4.2, "yaw": 12.8, "roll": 1.5},
+      "eyes": {"left": 0.29, "right": 0.31},
+      "sharpness": 412.7,
+      "size": {"width": 117.8, "height": 151.5, "rel_area": 0.0217}
+    }
+  ],
+  "model": "buffalo_l (ResNet100)",
+  "attributes_version": 1
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `kps` | The 5 detection keypoints `[[x, y], …]` in original image pixels: eye, eye, nose tip, mouth corner, mouth corner, as InsightFace orders them. |
+| `age` | Integer years from `genderage`. **Coarse**: poor on children, the elderly, scanned prints and blurry faces. A weak signal (e.g. one input to dating an undated photo), never a fact about a person. |
+| `gender` | `"female"` / `"male"` from `genderage`, same caveat as `age`. |
+| `pose` | Head pose in degrees from the 3D landmarks. `yaw` < 0: the subject turns to their own right (nose toward the image's left); `yaw` > 0: to their own left. `roll` > 0: the head tilts clockwise as seen in the image. Both flip sign on a mirrored photo (checked, and pinned by a test). Pitch and roll are noisier than yaw; use them for "roughly frontal" filters, not geometry. |
+| `eyes` | Eye aspect ratio per eye (vertical lid distance / horizontal eye width) from the 106 landmarks. `left`/`right` is the **subject's own** left/right, i.e. `left` is on the image's right in an unmirrored photo. Open eyes read about 0.25–0.35, closed ones under ~0.15, but the level varies by person and pose: compare photos of the same face rather than applying a fixed threshold. |
+| `sharpness` | Variance of the Laplacian of the grey face crop (bbox clamped to the image) scaled to 112×112, so faces of different sizes are comparable. Unitless; higher is sharper. Meaningful as a ranking (best frame of a series, best exemplar of a person), not as an absolute threshold across cameras. |
+| `size` | `width`/`height` of the bbox in pixels and `rel_area` = bbox area / image area, with the bbox clamped to the image so `rel_area` is in (0, 1]. |
+| `landmarks_106` | Only with `?landmarks=1`: the 106 2D landmarks `[[x, y], …]`. Off by default to keep responses small. |
+
+Any attribute a model did not produce comes back as `null` rather than missing. `model` is
+deliberately still `buffalo_l (ResNet100)`: consumers re-detect faces when it changes, and
+the embeddings are identical. New or changed attributes bump `attributes_version` instead;
+`/health` reports it as `face_attributes_version` in full mode.
+
+The attribute models (genderage and both landmark models) are fed the image in the BGR
+order insightface was trained on, while detection and recognition keep the RGB input they
+have always had, so stored embeddings stay valid. On RGB, genderage called every face in
+insightface's own group photo "female", including the three men.
 
 ### Era Estimation
 ```
@@ -183,8 +236,8 @@ Both invocations skip what does not apply to their mode, so the counts differ an
 neither should report zero skips:
 
 ```
-full   31 passed, 7 skipped
-text   29 passed, 9 skipped
+full   56 passed, 7 skipped
+text   43 passed, 20 skipped
 ```
 
 ### CLIP model

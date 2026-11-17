@@ -62,7 +62,7 @@ CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]
 # imports its heavy dependencies inside functions, and text mode never calls them.
 FROM base AS text
 
-COPY server.py ocr.py ./
+COPY server.py ocr.py face_attributes.py ./
 
 ENV EMBED_MODE=text
 
@@ -141,7 +141,7 @@ RUN for i in 1 2 3 4 5; do \
     echo "buffalo_l download failed (attempt $i), retrying"; rm -rf /root/.insightface/models/buffalo_l*; sleep 15; \
     done; exit 1
 
-COPY server.py ocr.py ./
+COPY server.py ocr.py face_attributes.py ./
 COPY scripts/fetch_models.sh scripts/
 
 # OCR models from HuggingFace (OCR runs on CPU inside the container)

@@ -7,12 +7,14 @@ import numpy as np
 import torch
 import open_clip
 from PIL import Image
-from fastapi import FastAPI, File, UploadFile, HTTPException, Body, Form
+from fastapi import FastAPI, File, UploadFile, HTTPException, Body, Form, Query
 import warnings
 
 # Safe to import unconditionally even in the text-only image, which ships neither
 # onnxruntime nor rapidocr: ocr.py imports both inside functions, not at module level.
 import ocr
+# Same rule as ocr: face_attributes imports cv2 inside the function that needs it.
+import face_attributes
 
 warnings.filterwarnings(
     "ignore",
@@ -137,12 +139,68 @@ if not TEXT_ONLY:
     from insightface.app import FaceAnalysis
 
     print("Loading InsightFace model...")
-    face_app = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
+    # These are all five buffalo_l models, i.e. exactly what FaceAnalysis loads when
+    # allowed_modules is left out -- listed so what runs per face is visible here:
+    # detection (bbox, det_score, 5 keypoints), the 106-point 2D landmarks (eye
+    # openness), the 68-point 3D landmarks (head pose), genderage, and recognition (the
+    # 512-dim embedding).
+    #
+    # Age and gender are coarse: the model is poor on children, the elderly, scanned
+    # prints and blurry faces. Treat them as a weak signal, never as a fact about a person.
+    face_app = FaceAnalysis(
+        name="buffalo_l",
+        providers=["CPUExecutionProvider"],
+        allowed_modules=[
+            "detection",
+            "landmark_2d_106",
+            "landmark_3d_68",
+            "genderage",
+            "recognition",
+        ],
+    )
     face_app.prepare(ctx_id=0 if DEVICE == "cuda" else -1, det_size=(1600, 1600))
     print("Loading OCR engine...")
     ocr.load_engine()
 
 print("All models loaded. Starting server...")
+
+
+# Models that see the image in the channel order this service has always given them.
+# The face endpoint hands insightface RGB (straight from PIL), while every insightface
+# model was trained on BGR (cv2) and swaps channels itself on the way in. Detection and
+# recognition keep getting RGB anyway: the stored embeddings and bboxes were produced
+# that way, and feeding them BGR would move every vector a consumer already has.
+FACE_RGB_TASKS = {"detection", "recognition"}
+
+
+def analyze_faces(img_rgb: np.ndarray) -> list:
+    """FaceAnalysis.get(), except the attribute models see the channel order they expect.
+
+    The same loop insightface's FaceAnalysis.get() runs (detect, then every other model
+    per face), so nothing runs twice. The difference is the input: genderage and the two
+    landmark models get BGR. On RGB they degrade badly and silently -- on insightface's
+    own t1 group photo, genderage called all six faces "female", three of them men, while
+    the BGR copy gets all six right. Detection and recognition still get RGB, so
+    `embedding`, `bbox`, `det_score` and `kps` are exactly what face_app.get() returns
+    (tests/test_api_face.py checks it).
+    """
+    from insightface.app.common import Face
+
+    img_bgr = np.ascontiguousarray(img_rgb[:, :, ::-1])
+    bboxes, kpss = face_app.det_model.detect(img_rgb, max_num=0, metric="default")
+    faces = []
+    for i in range(bboxes.shape[0]):
+        face = Face(
+            bbox=bboxes[i, 0:4],
+            kps=kpss[i] if kpss is not None else None,
+            det_score=bboxes[i, 4],
+        )
+        for taskname, face_model in face_app.models.items():
+            if taskname == "detection":
+                continue
+            face_model.get(img_rgb if taskname in FACE_RGB_TASKS else img_bgr, face)
+        faces.append(face)
+    return faces
 
 
 def require_full_mode(capability: str) -> None:
@@ -168,6 +226,8 @@ def health():
     # that image ships neither onnxruntime nor rapidocr and /health would raise instead of
     # answering -- turning the one endpoint that reports trouble into trouble of its own.
     result["ocr"] = {"enabled": False} if TEXT_ONLY else ocr.engine_info()
+    if not TEXT_ONLY:
+        result["face_attributes_version"] = face_attributes.ATTRIBUTES_VERSION
     # Consumers store these vectors in a fixed-width column, so let them check the
     # width they are about to receive instead of discovering it on a failed insert.
     result["clip"] = {
@@ -213,7 +273,12 @@ async def embed_text(text: str = Body(..., embed=True)):
     return {"dim": len(vec), "embedding": vec, "model": MODEL_NAME, "pretrained": PRETRAINED}
 
 @app.post("/embed/face", response_model=dict)
-async def embed_face(file: UploadFile = File(...)):
+async def embed_face(
+    file: UploadFile = File(...),
+    # Off by default: 106 points per face would multiply the response size for a field
+    # most callers never read.
+    landmarks: bool = Query(False, description="Add landmarks_106 to every face."),
+):
     require_full_mode("Face embedding")
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Please upload an image/* file.")
@@ -222,21 +287,31 @@ async def embed_face(file: UploadFile = File(...)):
     img = Image.open(io.BytesIO(raw)).convert("RGB")
     img_array = np.array(img)
 
-    faces = face_app.get(img_array)
+    faces = analyze_faces(img_array)
 
     results = []
     for i, face in enumerate(faces):
         embedding = face.normed_embedding.tolist()
         bbox = face.bbox.tolist()
-        results.append({
+        entry = {
             "face_index": i,
             "dim": len(embedding),
             "embedding": embedding,
             "bbox": bbox,
             "det_score": float(face.det_score)
-        })
+        }
+        # Additive only: the fields above stay exactly as they were.
+        entry.update(face_attributes.describe(face, img_array, include_landmarks=landmarks))
+        results.append(entry)
 
-    return {"faces_count": len(results), "faces": results, "model": "buffalo_l (ResNet100)"}
+    # `model` must not change: the client re-detects every face when it does, and the
+    # embeddings are the same as before. New attributes bump attributes_version instead.
+    return {
+        "faces_count": len(results),
+        "faces": results,
+        "model": "buffalo_l (ResNet100)",
+        "attributes_version": face_attributes.ATTRIBUTES_VERSION,
+    }
 
 @app.post("/estimate/era", response_model=dict)
 async def estimate_era(file: UploadFile = File(...)):

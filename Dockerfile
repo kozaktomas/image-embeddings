@@ -62,7 +62,9 @@ CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]
 # imports its heavy dependencies inside functions, and text mode never calls them.
 FROM base AS text
 
-COPY server.py ocr.py face_attributes.py ./
+# age_gender.py is imported by server.py but builds nothing in text mode, so neither
+# ultralytics, the MiVOLO model code nor its weights are in this image.
+COPY server.py ocr.py face_attributes.py age_gender.py ./
 
 ENV EMBED_MODE=text
 
@@ -122,8 +124,17 @@ RUN pip install --no-cache-dir --no-deps "rapidocr==3.9.2" && \
     pip install --no-cache-dir pyclipper "Shapely>=1.7.1" "omegaconf!=2.2.1" \
     colorlog six tqdm requests PyYAML
 
-# insightface pulls in full opencv-python, which shadows the headless build and then
-# needs libGL.so.1, and CPU onnxruntime, which shadows onnxruntime-gpu. Uninstall both and
+# ultralytics runs the face + person detector that MiVOLO pairs faces with bodies by
+# (age_gender.py). Pinned, because its import and predict() change process-wide settings
+# that age_gender.py undoes one by one, and a new release may add another. Its
+# dependencies add matplotlib, polars, psutil, nvidia-ml-py and ultralytics-thop and
+# leave torch, torchvision, timm, transformers and open_clip alone; like insightface it
+# also wants full opencv-python, which the next step removes again.
+RUN pip install --no-cache-dir "ultralytics==8.4.215"
+
+# insightface and ultralytics pull in full opencv-python, which shadows the headless build
+# and then needs libGL.so.1, and insightface CPU onnxruntime, which shadows
+# onnxruntime-gpu. Uninstall both and
 # force-reinstall the replacements -- uninstalling a sibling also deletes files owned by
 # its replacement.
 # onnxruntime-gpu is pinned on purpose: 1.28 is built against CUDA 13, while torch cu128
@@ -134,6 +145,15 @@ RUN pip uninstall -y opencv-python onnxruntime && \
     "onnxruntime-gpu==1.22.0" "opencv-python-headless<4.10" && \
     pip install --no-cache-dir coloredlogs flatbuffers
 
+# Fail the build, not the first request, if a dependency has brought either one back.
+RUN python -c "import importlib.metadata as md; \
+    names = {d.metadata['Name'].lower() for d in md.distributions()}; \
+    assert not names & {'opencv-python', 'onnxruntime'}, names & {'opencv-python', 'onnxruntime'}; \
+    assert md.version('onnxruntime-gpu') == '1.22.0', md.version('onnxruntime-gpu'); \
+    import cv2, onnxruntime; \
+    assert 'CUDAExecutionProvider' in onnxruntime.get_available_providers(); \
+    print('cv2', cv2.__version__, 'onnxruntime-gpu', onnxruntime.__version__)"
+
 # buffalo_l comes from a GitHub release, which has dropped the connection mid-build
 # before and failed the whole pipeline. Retry instead of failing on the first try.
 RUN for i in 1 2 3 4 5; do \
@@ -141,7 +161,14 @@ RUN for i in 1 2 3 4 5; do \
     echo "buffalo_l download failed (attempt $i), retrying"; rm -rf /root/.insightface/models/buffalo_l*; sleep 15; \
     done; exit 1
 
-COPY server.py ocr.py face_attributes.py ./
+# MiVOLO v2 and its person detector, ~250 MB, from pinned HuggingFace commits. Before the
+# code is copied in, so a code-only change does not download them again.
+ENV MIVOLO_MODELS_DIR=/app/models/mivolo
+COPY scripts/fetch_mivolo.sh scripts/
+RUN ./scripts/fetch_mivolo.sh
+
+COPY server.py ocr.py face_attributes.py age_gender.py mivolo_model.py ./
+COPY third_party/ third_party/
 COPY scripts/fetch_models.sh scripts/
 
 # OCR models from HuggingFace (OCR runs on CPU inside the container)

@@ -50,6 +50,16 @@ def test_text_embedding_still_works():
     assert math.isclose(math.sqrt(sum(x * x for x in vec)), 1.0, rel_tol=1e-3)
 
 
+def test_no_age_gender_models():
+    """Neither MiVOLO nor the person detector is built, and ultralytics never imported."""
+    import sys
+
+    assert client.get("/health").json()["age_gender"] == {"enabled": False}
+    assert server.age_gender_model is None
+    assert "ultralytics" not in sys.modules
+    assert "mivolo_model" not in sys.modules
+
+
 def test_visual_tower_is_released():
     """Dropping it is what makes the service fit in a container limit worth setting."""
     assert server.model.visual is None

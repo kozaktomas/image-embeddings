@@ -1,7 +1,16 @@
+import os
+
 import pytest
 from PIL import Image, ImageDraw, ImageFont
 
 import ocr
+
+# The text-only image ships no rapidocr and never loads the engine (test_text_mode.py
+# checks that /ocr/image answers 503 there), so none of this applies.
+pytestmark = pytest.mark.skipif(
+    os.environ.get("EMBED_MODE", "full").strip().lower() == "text",
+    reason="EMBED_MODE=text loads no OCR engine",
+)
 
 FONT_CANDIDATES = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",

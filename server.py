@@ -15,6 +15,8 @@ import warnings
 import ocr
 # Same rule as ocr: face_attributes imports cv2 inside the function that needs it.
 import face_attributes
+# And again: age_gender imports torch, timm, scipy and ultralytics only once a model is built.
+import age_gender
 
 warnings.filterwarnings(
     "ignore",
@@ -162,6 +164,25 @@ if not TEXT_ONLY:
     print("Loading OCR engine...")
     ocr.load_engine()
 
+# === MIVOLO CONFIG ===
+# MiVOLO v2 estimates age and gender from the face and the body of the person it belongs
+# to, next to InsightFace's genderage (see age_gender.py). It needs a person detector, a
+# YOLOv8x, on top of buffalo_l. Loaded after every other model on purpose: importing
+# ultralytics changes process-wide settings, which age_gender contains, and nothing that
+# is already loaded can be affected by it.
+#
+# MIVOLO_ENABLED=0 skips both models (about 250 MB of weights, and ~0.1 s per photo on
+# the GPU) without a rebuild; every face then reports `mivolo: null`. The weights are
+# CC-BY-NC-4.0 and the detector AGPL-3.0, which is another reason to be able to turn it off.
+MIVOLO_ENABLED = os.environ.get("MIVOLO_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+MIVOLO_MODELS_DIR = os.environ.get(
+    "MIVOLO_MODELS_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "mivolo")
+)
+age_gender_model = None
+if not TEXT_ONLY and MIVOLO_ENABLED:
+    print(f"Loading MiVOLO v2 and the person detector from {MIVOLO_MODELS_DIR}...")
+    age_gender_model = age_gender.AgeGenderEstimator(MIVOLO_MODELS_DIR, DEVICE)
+
 print("All models loaded. Starting server...")
 
 
@@ -173,7 +194,7 @@ print("All models loaded. Starting server...")
 FACE_RGB_TASKS = {"detection", "recognition"}
 
 
-def analyze_faces(img_rgb: np.ndarray) -> list:
+def analyze_faces(img_rgb: np.ndarray, img_bgr: np.ndarray = None) -> list:
     """FaceAnalysis.get(), except the attribute models see the channel order they expect.
 
     The same loop insightface's FaceAnalysis.get() runs (detect, then every other model
@@ -186,7 +207,8 @@ def analyze_faces(img_rgb: np.ndarray) -> list:
     """
     from insightface.app.common import Face
 
-    img_bgr = np.ascontiguousarray(img_rgb[:, :, ::-1])
+    if img_bgr is None:
+        img_bgr = np.ascontiguousarray(img_rgb[:, :, ::-1])
     bboxes, kpss = face_app.det_model.detect(img_rgb, max_num=0, metric="default")
     faces = []
     for i in range(bboxes.shape[0]):
@@ -216,6 +238,26 @@ def require_full_mode(capability: str) -> None:
             detail=f"{capability} is unavailable: EMBED_MODE=text serves /embed/text only.",
         )
 
+def age_gender_info() -> dict:
+    """What /health says about MiVOLO and its person detector."""
+    if age_gender_model is None:
+        return {"enabled": False}
+    return {
+        "enabled": True,
+        "mivolo": {
+            "loaded": True,
+            "model": age_gender.MIVOLO_MODEL_NAME,
+            "source": f"{age_gender.MIVOLO_REPO}@{age_gender.MIVOLO_REVISION}",
+            "precision": "fp16" if age_gender_model.half else "fp32",
+        },
+        "person_detector": {
+            "loaded": True,
+            "model": age_gender.DETECTOR_MODEL_NAME,
+            "source": f"{age_gender.DETECTOR_REPO}@{age_gender.DETECTOR_REVISION}",
+        },
+    }
+
+
 @app.get("/health")
 def health():
     result = {"mode": EMBED_MODE, "device": DEVICE, "cuda": torch.cuda.is_available()}
@@ -228,6 +270,7 @@ def health():
     result["ocr"] = {"enabled": False} if TEXT_ONLY else ocr.engine_info()
     if not TEXT_ONLY:
         result["face_attributes_version"] = face_attributes.ATTRIBUTES_VERSION
+    result["age_gender"] = age_gender_info()
     # Consumers store these vectors in a fixed-width column, so let them check the
     # width they are about to receive instead of discovering it on a failed insert.
     result["clip"] = {
@@ -286,8 +329,16 @@ async def embed_face(
     raw = await file.read()
     img = Image.open(io.BytesIO(raw)).convert("RGB")
     img_array = np.array(img)
+    # BGR for the models trained on it (insightface's attribute models, the person
+    # detector and MiVOLO); detection and recognition keep getting RGB, see analyze_faces.
+    img_bgr = np.ascontiguousarray(img_array[:, :, ::-1])
 
-    faces = analyze_faces(img_array)
+    faces = analyze_faces(img_array, img_bgr)
+    # One detector pass and one MiVOLO forward pass for all faces of the photo.
+    if age_gender_model is not None:
+        estimates = age_gender_model.estimate(img_bgr, [face.bbox for face in faces])
+    else:
+        estimates = [None] * len(faces)
 
     results = []
     for i, face in enumerate(faces):
@@ -302,6 +353,7 @@ async def embed_face(
         }
         # Additive only: the fields above stay exactly as they were.
         entry.update(face_attributes.describe(face, img_array, include_landmarks=landmarks))
+        entry["mivolo"] = estimates[i]
         results.append(entry)
 
     # `model` must not change: the client re-detects every face when it does, and the

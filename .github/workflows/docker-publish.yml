@@ -4,6 +4,11 @@ on:
   push:
     branches: [ main ]
     tags: [ 'v*.*.*' ]
+  # Build both targets on a pull request too, without pushing (every push and login step
+  # below is already skipped for pull_request), so a Dockerfile that no longer builds is
+  # caught before it reaches main.
+  pull_request:
+    branches: [ main ]
 
 env:
   REGISTRY: ghcr.io

@@ -18,7 +18,9 @@ import numpy as np
 # `attributes_version` by /embed/face and `face_attributes_version` by /health. Kept
 # separate from the face `model` string on purpose: the client re-detects faces when that
 # string changes, and these attributes do not change the embeddings.
-ATTRIBUTES_VERSION = 1
+#   1  kps, age, gender, pose, eyes, sharpness, size, landmarks_106 (on request)
+#   2  mivolo: MiVOLO v2 age and gender from the face and the body (age_gender.py)
+ATTRIBUTES_VERSION = 2
 
 # `face.gender` from genderage is argmax over two logits: 0 = female, 1 = male (that is
 # what insightface's own Face.sex maps to "F" / "M").

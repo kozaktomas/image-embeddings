@@ -71,7 +71,7 @@ def test_finds_the_group(body):
 def test_model_string_and_version(body):
     """The client re-detects every face when `model` changes; it must not."""
     assert body["model"] == FACE_MODEL
-    assert body["attributes_version"] == 1
+    assert body["attributes_version"] == 2
 
 
 def test_old_fields_keep_their_shape(body):
@@ -176,4 +176,4 @@ def test_blur_lowers_sharpness_of_the_same_face(body, image):
 
 
 def test_health_reports_the_attributes_version():
-    assert client.get("/health").json()["face_attributes_version"] == 1
+    assert client.get("/health").json()["face_attributes_version"] == 2

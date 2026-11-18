@@ -26,8 +26,13 @@ python3 -m venv venv
 ./venv/bin/pip install --no-deps rapidocr
 ./venv/bin/pip install pyclipper "Shapely>=1.7.1" "omegaconf!=2.2.1" colorlog six tqdm requests
 
-# Only now overwrite what insightface dragged in: CPU onnxruntime -> GPU, full opencv ->
-# headless (the server has no GUI libraries).
+# ultralytics runs MiVOLO's face + person detector (age_gender.py). Pinned: its import and
+# predict() change process-wide settings that age_gender.py restores one by one. Like
+# insightface it drags in full opencv-python, so it goes in before the swap below.
+./venv/bin/pip install "ultralytics==8.4.215"
+
+# Only now overwrite what insightface and ultralytics dragged in: CPU onnxruntime -> GPU,
+# full opencv -> headless (the server has no GUI libraries).
 #
 # The onnxruntime-gpu version is pinned on purpose: 1.28 is built against CUDA 13, while
 # this machine (and torch cu128) provide CUDA 12.8. With 1.28 the CUDAExecutionProvider
@@ -44,6 +49,7 @@ python3 -m venv venv
 ./venv/bin/pip install coloredlogs
 
 ./scripts/fetch_models.sh
+./scripts/fetch_mivolo.sh
 
 # Runnable check: if this passes, the environment is genuinely usable.
 ./venv/bin/python - <<'PY'
@@ -81,7 +87,13 @@ if "CUDAExecutionProvider" not in active:
 
 from insightface.app import FaceAnalysis  # noqa: F401
 from rapidocr import RapidOCR  # noqa: F401
-print("rapidocr + insightface imports OK")
+from ultralytics import YOLO  # noqa: F401
+print("rapidocr + insightface + ultralytics imports OK")
+
+import importlib.metadata as md
+shadows = {d.metadata["Name"].lower() for d in md.distributions()} & {"opencv-python", "onnxruntime"}
+if shadows:
+    problems.append(f"{sorted(shadows)} installed: they shadow the headless / GPU builds")
 
 if problems:
     sys.exit("ENVIRONMENT ERROR:\n  - " + "\n  - ".join(problems))
